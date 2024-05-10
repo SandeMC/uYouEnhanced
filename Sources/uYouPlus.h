@@ -42,6 +42,7 @@
 #import <YouTubeHeader/ELMNodeController.h>
 
 // YouTube-X
+#import <YouTubeHeader/YTReelModel.h>
 #import <YouTubeHeader/YTVideoWithContextNode.h>
 #import <YouTubeHeader/ELMCellNode.h>
 
@@ -53,8 +54,21 @@
 #define DEFAULT_RATE 1.0f // YTSpeed
 #define LOWCONTRASTMODE_CUTOFF_VERSION @"17.38.10" // LowContrastMode (v17.33.2-17.38.10)
 
+// Always show remaining time in video player - @bhackel
+@interface YTPlayerBarController : NSObject
+@property(nonatomic, strong) YTInlinePlayerBarContainerView *playerBar;
+@end
+@interface YTInlinePlayerBarContainerView (uYouEnhanced)
+@property(nonatomic, assign) BOOL shouldDisplayTimeRemaining;
+@end
+
 // IAmYouTube
 @interface SSOConfiguration : NSObject
+@end
+
+// Disable Snap to chapter
+@interface YTSegmentableInlinePlayerBarView : UIView
+@property(nonatomic, assign) BOOL enableSnapToChapter;
 @end
 
 // Hide Double tap to seek Overlay
