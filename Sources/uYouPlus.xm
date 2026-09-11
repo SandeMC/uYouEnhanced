@@ -1,4 +1,5 @@
 #import "uYouPlus.h"
+#import "uYouPlusPatches.h"
 
 // Tweak's bundle for Localizations support - @PoomSmart - https://github.com/PoomSmart/YouPiP/commit/aea2473f64c75d73cab713e1e2d5d0a77675024f
 NSBundle *uYouPlusBundle() {
@@ -9,25 +10,66 @@ NSBundle *uYouPlusBundle() {
         if (tweakBundlePath)
             bundle = [NSBundle bundleWithPath:tweakBundlePath];
         else
-            bundle = [NSBundle bundleWithPath:ROOT_PATH_NS(@"/Library/Application Support/uYouPlus.bundle")];
+            bundle = [NSBundle bundleWithPath:ROOT_PATH_NS(@"/Library/Application Support/uYouPlus.bundle")]; // ROOT_PATH_NS = JBROOT_PATH_NSSTRING
     });
     return bundle;
 }
 NSBundle *tweakBundle = uYouPlusBundle();
-
-// uYouPlusSettings.xm
-static int contrastMode() {
-    NSString *appVersion = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"];
-    NSComparisonResult result1 = [appVersion compare:@"17.33.2" options:NSNumericSearch];
-    NSComparisonResult result2 = [appVersion compare:@"17.38.10" options:NSNumericSearch];
-
-    if (result1 != NSOrderedAscending && result2 != NSOrderedDescending) {
-        return [[NSUserDefaults standardUserDefaults] integerForKey:@"lcm"];
-    } else {
-        return 0;
-    }
-}
 //
+
+
+%group gAlwaysOn
+
+// Hide Player Buttons - moved to Sources/HidePlayerButtons.xm
+
+// Replace YouTube's download with uYou's - 19.30.2+
+YTMainAppControlsOverlayView *controlsOverlayView;
+%hook YTMainAppControlsOverlayView
+- (id)initWithDelegate:(id)arg1 {
+    controlsOverlayView = %orig;
+    return controlsOverlayView;
+}
+%end
+%hook YTElementsDefaultSheetController
++ (void)showSheetController:(id)arg1 showCommand:(id)arg2 commandContext:(id)arg3 handler:(id)arg4 {
+    if (IS_ENABLED(kReplaceYTDownloadWithuYou) && [arg2 isKindOfClass:%c(ELMPBShowActionSheetCommand)]) {
+        ELMPBShowActionSheetCommand *showCommand = (ELMPBShowActionSheetCommand *)arg2;
+        NSArray *listOptions = [showCommand listOptionArray];
+
+        for (ELMPBElement *element in listOptions) {
+            ELMPBProperties *properties = [element properties];
+            if (!properties) continue;
+
+            NSString *identifier = nil;
+
+            if ([properties respondsToSelector:@selector(firstSubmessage)]) {
+                id sub = [properties firstSubmessage];
+                if ([sub respondsToSelector:@selector(identifier)]) {
+                    identifier = [sub identifier];
+                }
+            } else if ([properties respondsToSelector:@selector(submessageAtIndex:)]) {
+                id sub = [properties submessageAtIndex:0];
+                if ([sub respondsToSelector:@selector(identifier)]) {
+                    identifier = [sub identifier];
+                }
+            } else if ([properties respondsToSelector:@selector(description)]) {
+                NSString *desc = [properties description];
+                if ([desc containsString:@"offline_upsell_dialog"]) {
+                    identifier = @"offline_upsell_dialog";
+                }
+            }
+
+            if (identifier && [identifier containsString:@"offline_upsell_dialog"]) {
+                if (controlsOverlayView && [controlsOverlayView respondsToSelector:@selector(uYou)]) {
+                    [controlsOverlayView uYou];
+                }
+                return;
+            }
+        }
+    }
+    %orig;
+}
+%end
 
 # pragma mark - Other hooks
 
@@ -37,7 +79,7 @@ static int contrastMode() {
     didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey, id> *)launchOptions {
     BOOL didFinishLaunching = %orig;
 
-    if (IS_ENABLED(@"flex_enabled")) {
+    if (IS_ENABLED(kFlex)) {
         [[%c(FLEXManager) performSelector:@selector(sharedManager)] performSelector:@selector(showExplorer)];
     }
 
@@ -45,159 +87,53 @@ static int contrastMode() {
 }
 - (void)appWillResignActive:(id)arg1 {
     %orig;
-         if (IS_ENABLED(@"flex_enabled")) {
+         if (IS_ENABLED(kFlex)) {
         [[%c(FLEXManager) performSelector:@selector(sharedManager)] performSelector:@selector(showExplorer)];
     }
 }
 %end
 
-// Fixes uYou crash when trying to play video (#1422)
-@interface YTVarispeedSwitchController : NSObject
-@end
+// YTPlayerOverlayManager + NSFileManager fix - moved to Sources/uYouPlusPatches.xm
 
-@interface YTPlayerOverlayManager : NSObject
-@property (nonatomic, assign) float currentPlaybackRate;
-@property (nonatomic, strong, readonly) YTVarispeedSwitchController *varispeedController;
-
-- (void)varispeedSwitchController:(YTVarispeedSwitchController *)varispeed didSelectRate:(float)rate;
-- (void)setCurrentPlaybackRate:(float)rate;
-- (void)setPlaybackRate:(float)rate;
-@end
-
-%hook YTPlayerOverlayManager
-%property (nonatomic, assign) float currentPlaybackRate;
-
-%new
-- (void)setCurrentPlaybackRate:(float)rate {
-    [self varispeedSwitchController:self.varispeedController didSelectRate:rate];
-}
-
-%new
-- (void)setPlaybackRate:(float)rate {
-    [self varispeedSwitchController:self.varispeedController didSelectRate:rate];
-}
+// Remove App Rating Prompt in YouTube (for Sideloaded - iOS 14+) - @arichornlover
+%hook SKStoreReviewController
++ (void)requestReview { }
 %end
 
-// Enable Alternate Icons
+// Enable Alternate Icons - @arichornlover
 %hook UIApplication
 - (BOOL)supportsAlternateIcons {
     return YES;
 }
-%end
-
-// uYou AdBlocking Workaround LITE (This Version only removes ads from Videos/Shorts) - @PoomSmart
-%group uYouAdBlockingWorkaroundLite
-%hook YTReelInfinitePlaybackDataSource
-- (void)setReels:(NSMutableOrderedSet <YTReelModel *> *)reels {
-    [reels removeObjectsAtIndexes:[reels indexesOfObjectsPassingTest:^BOOL(YTReelModel *obj, NSUInteger idx, BOOL *stop) {
-        return [obj respondsToSelector:@selector(videoType)] ? obj.videoType == 3 : NO;
-    }]];
-    %orig;
-}
-%end
-
-%hook YTAdsInnerTubeContextDecorator
-- (void)decorateContext:(id)context {}
-%end
-
-%hook YTAccountScopedAdsInnerTubeContextDecorator
-- (void)decorateContext:(id)context {}
-%end
-%end
-
-// uYou AdBlocking Workaround (for uYou Option) - @PoomSmart
-%group uYouAdBlockingWorkaround
-// Workaround: uYou 3.0.3 Adblock fix - @PoomSmart
-%hook YTReelInfinitePlaybackDataSource
-- (void)setReels:(NSMutableOrderedSet <YTReelModel *> *)reels {
-    if ([NSUserDefaults.standardUserDefaults boolForKey:@"removeYouTubeAds"]) {
-        [reels removeObjectsAtIndexes:[reels indexesOfObjectsPassingTest:^BOOL(YTReelModel *obj, NSUInteger idx, BOOL *stop) {
-            return [obj respondsToSelector:@selector(videoType)] ? obj.videoType == 3 : NO;
-        }]];
+- (NSString *)alternateIconName {
+    NSString *savedIcon = [[NSUserDefaults standardUserDefaults] stringForKey:@"customAppIcon_name"];
+    BOOL enabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"appIconCustomization_enabled"];
+    if (enabled && savedIcon.length > 0) {
+        return savedIcon;
     }
-    %orig;
-}
-%end
-
-%hook YTAdsInnerTubeContextDecorator
-- (void)decorateContext:(id)context {
-    if ([NSUserDefaults.standardUserDefaults boolForKey:@"removeYouTubeAds"]) {}
-}
-%end
-
-%hook YTAccountScopedAdsInnerTubeContextDecorator
-- (void)decorateContext:(id)context {
-    if ([NSUserDefaults.standardUserDefaults boolForKey:@"removeYouTubeAds"]) {}
-}
-%end
-
-BOOL isAdString(NSString *description) {
-    if ([description containsString:@"brand_promo"]
-        || [description containsString:@"carousel_footered_layout"]
-        || [description containsString:@"carousel_headered_layout"]
-        || [description containsString:@"feed_ad_metadata"]
-        || [description containsString:@"full_width_portrait_image_layout"]
-        || [description containsString:@"full_width_square_image_layout"]
-        || [description containsString:@"home_video_with_context"]
-        || [description containsString:@"landscape_image_wide_button_layout"]
-        // || [description containsString:@"product_carousel"]
-        || [description containsString:@"product_engagement_panel"]
-        || [description containsString:@"product_item"]
-        || [description containsString:@"shelf_header"]
-        // || [description containsString:@"statement_banner"]
-        || [description containsString:@"square_image_layout"] // install app ad
-        || [description containsString:@"text_image_button_layout"]
-        || [description containsString:@"text_search_ad"]
-        || [description containsString:@"video_display_full_buttoned_layout"])
-        return YES;
-    return NO;
-}
-
-NSData *cellDividerData;
-
-%hook YTIElementRenderer
-- (NSData *)elementData {
-    NSString *description = [self description];
-    if ([description containsString:@"cell_divider"]) {
-        if (!cellDividerData) cellDividerData = %orig;
-        return cellDividerData;
-    }
-    if ([self respondsToSelector:@selector(hasCompatibilityOptions)] && self.hasCompatibilityOptions && self.compatibilityOptions.hasAdLoggingData) return cellDividerData;
-    // if (isAdString(description)) return cellDividerData;
     return %orig;
 }
-%end
-
-%hook YTInnerTubeCollectionViewController
-- (void)loadWithModel:(YTISectionListRenderer *)model {
-    if ([NSUserDefaults.standardUserDefaults boolForKey:@"removeYouTubeAds"]) {
-        if ([model isKindOfClass:%c(YTISectionListRenderer)]) {
-            NSMutableArray <YTISectionListSupportedRenderers *> *contentsArray = model.contentsArray;
-            NSIndexSet *removeIndexes = [contentsArray indexesOfObjectsPassingTest:^BOOL(YTISectionListSupportedRenderers *renderers, NSUInteger idx, BOOL *stop) {
-                if (![renderers isKindOfClass:%c(YTISectionListSupportedRenderers)])
-                    return NO;
-                YTIItemSectionRenderer *sectionRenderer = renderers.itemSectionRenderer;
-                YTIItemSectionSupportedRenderers *firstObject = [sectionRenderer.contentsArray firstObject];
-                YTIElementRenderer *elementRenderer = firstObject.elementRenderer;
-                NSString *description = [elementRenderer description];
-                return isAdString(description)
-                    || [description containsString:@"post_shelf"]
-                    || [description containsString:@"product_carousel"]
-                    || [description containsString:@"statement_banner"];
-            }];
-            [contentsArray removeObjectsAtIndexes:removeIndexes];
-        }
+- (void)setAlternateIconName:(NSString *)alternateIconName completionHandler:(void (^)(NSError *_Nullable))completionHandler {
+    if (alternateIconName.length > 0) {
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"appIconCustomization_enabled"];
+        [[NSUserDefaults standardUserDefaults] setObject:alternateIconName forKey:@"customAppIcon_name"];
+    } else {
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"appIconCustomization_enabled"];
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"customAppIcon_name"];
     }
     %orig;
 }
 %end
-%end
+
+%end // gAlwaysOn
+
+// Ad Blocking - moved to Sources/AdBlocking.xm
 
 // Hide YouTube Logo - @dayanch96
 %group gHideYouTubeLogo
 %hook YTHeaderLogoController
 - (YTHeaderLogoController *)init {
-    return NULL;
+    return nil;
 }
 %end
 %hook YTNavigationBarTitleView
@@ -210,49 +146,43 @@ NSData *cellDividerData;
 %end
 %end
 
+// Center YouTube Logo - @arichornlover
 %group gCenterYouTubeLogo
 %hook YTNavigationBarTitleView
-- (void)setShouldCenterNavBarTitleView:(BOOL)center {
-    %orig(YES);
-}
-- (BOOL)shouldCenterNavBarTitleView {
-    return YES;
-}
 - (void)alignCustomViewToCenterOfWindow {
+    UIView *superview = self.superview;
+    if (!superview) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            CGRect frame = self.frame;
+            CGFloat newX = (superview.bounds.size.width - frame.size.width) / 2;
+            frame.origin.x = newX;
+            self.frame = frame;
+            [self setNeedsLayout];
+            [self layoutIfNeeded];
+        } @catch (NSException *ex) {
+            NSLog(@"[alignCustomViewToCenterOfWindow] Exception: %@", ex);
+        }
+    });
 }
 %end
 %end
 
-
-// Fix App Group Directory by move it to document directory
-%hook NSFileManager
-- (NSURL *)containerURLForSecurityApplicationGroupIdentifier:(NSString *)groupIdentifier {
-    if (groupIdentifier != nil) {
-        NSArray *paths = [[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask];
-        NSURL *documentsURL = [paths lastObject];
-        return [documentsURL URLByAppendingPathComponent:@"AppGroup"];
-    }
-    return %orig(groupIdentifier);
-}
-%end
-
-// Remove App Rating Prompt in YouTube (for Sideloaded - iOS 14+) - @arichornlover
-%hook SKStoreReviewController
-+ (void)requestReview { }
-%end
+%group gMisc1
 
 // YTMiniPlayerEnabler: https://github.com/level3tjg/YTMiniplayerEnabler/
 %hook YTWatchMiniBarViewController
 - (void)updateMiniBarPlayerStateFromRenderer {
-    if (IS_ENABLED(@"ytMiniPlayer_enabled")) {}
-    else { return %orig; }
+    if (!IS_ENABLED(kYTMiniPlayer)) {
+        %orig;
+    }
 }
 %end
 
 // YTNoHoverCards: https://github.com/level3tjg/YTNoHoverCards
 %hook YTCreatorEndscreenView
 - (void)setHidden:(BOOL)hidden {
-    if (IS_ENABLED(@"hideHoverCards_enabled"))
+    if (IS_ENABLED(kHideHoverCards))
         hidden = YES;
     %orig;
 }
@@ -274,10 +204,30 @@ NSData *cellDividerData;
 
 // A/B flags
 %hook YTColdConfig 
-- (BOOL)respectDeviceCaptionSetting { return NO; } // YouRememberCaption: https://poomsmart.github.io/repo/depictions/youremembercaption.html
-- (BOOL)isLandscapeEngagementPanelSwipeRightToDismissEnabled { return YES; } // Swipe right to dismiss the right panel in fullscreen mode
+- (BOOL)respectDeviceCaptionSetting { return NO; } // YouRememberCaption: https://poomsmart.github.io/repo/depictions/youremembercaption.html - deprecated flag ⚠️
+- (BOOL)isLandscapeEngagementPanelSwipeRightToDismissEnabled { return YES; } // Swipe right to dismiss the right panel in fullscreen mode - deprecated flag ⚠️
 - (BOOL)enableModularPlayerBarController { return NO; } // fixes some of the iSponorBlock problems
+- (BOOL)mainAppCoreClientEnableCairoSettings { return IS_ENABLED(@"newSettingsUI_enabled"); } // New grouped settings UI
+- (BOOL)enableIosFloatingMiniplayer { return IS_ENABLED(@"floatingMiniplayer_enabled"); } // Floating Miniplayer
+- (BOOL)enableIosFloatingMiniplayerSwipeUpToExpand { return IS_ENABLED(@"floatingMiniplayer_enabled"); } // Floating Miniplayer - deprecated flag ⚠️
+- (BOOL)enableIosFloatingMiniplayerRepositioning { return IS_ENABLED(@"floatingMiniplayer2_enabled"); } // Floating Miniplayer (Repositioning Support, Removes Swiping Up Gesture) - deprecated fla[...]
 %end
+
+%end // gMisc1
+
+// Fix Casting: https://github.com/arichornlover/uYouEnhanced/issues/606#issuecomment-2098289942
+%group gFixCasting
+%hook YTColdConfig
+- (BOOL)cxClientEnableIosLocalNetworkPermissionReliabilityFixes { return YES; }
+- (BOOL)cxClientEnableIosLocalNetworkPermissionUsingSockets { return NO; }
+- (BOOL)cxClientEnableIosLocalNetworkPermissionWifiFixes { return YES; }
+%end
+%hook YTHotConfig
+- (BOOL)isPromptForLocalNetworkPermissionsEnabled { return YES; } // deprecated flag ⚠️
+%end
+%end
+
+%group gMisc2
 
 // NOYTPremium - https://github.com/PoomSmart/NoYTPremium/
 %hook YTCommerceEventGroupHandler
@@ -298,20 +248,43 @@ NSData *cellDividerData;
 - (BOOL)canShowThrottledPromoWithFrequencyCaps:(id)arg1 { return NO; }
 %end
 
+%hook YTPromoThrottleControllerImpl
+- (BOOL)canShowThrottledPromo { return NO; }
+- (BOOL)canShowThrottledPromoWithFrequencyCap:(id)arg1 { return NO; }
+- (BOOL)canShowThrottledPromoWithFrequencyCaps:(id)arg1 { return NO; }
+%end
+
 %hook YTIShowFullscreenInterstitialCommand
-- (BOOL)shouldThrottleInterstitial { return YES; }
+- (BOOL)shouldThrottleInterstitial {
+    if (self.hasModalClientThrottlingRules)
+        self.modalClientThrottlingRules.oncePerTimeWindow = YES;
+    return %orig;
+}
+%end
+
+%hook YTSettingsSectionItemManager
+- (void)updatePremiumEarlyAccessSectionWithEntry:(id)arg1 {}
 %end
 
 %hook YTSurveyController
 - (void)showSurveyWithRenderer:(id)arg1 surveyParentResponder:(id)arg2 {}
 %end
 
-%hook YTIOfflineabilityFormat
-%new
-- (int)availabilityType { return 1; }
-%new
-- (BOOL)savedSettingShouldExpire { return NO; }
-%end
+// Restore Settings Button in Navigaton Bar - @arichornlover & @bhackel - https://github.com/arichornlover/uYouEnhanced/issues/178
+// WILL RESULT IN LOSING THE SETTINGS BUTTON!
+// %hook YTRightNavigationButtons
+// - (id)visibleButtons {
+//     Class YTVersionUtilsClass = %c(YTVersionUtils);
+//     NSString *appVersion = [YTVersionUtilsClass performSelector:@selector(appVersion)];
+//     NSComparisonResult result = [appVersion compare:@"18.35.4" options:NSNumericSearch];
+//     if (result == NSOrderedAscending) {
+//         return %orig;
+//     }
+//     return [self dynamicButtons];
+// }
+// %end
+
+%end // gMisc2
 
 // Hide "Get Youtube Premium" in "You" tab - @bhackel
 %group gHidePremiumPromos
@@ -352,286 +325,113 @@ NSData *cellDividerData;
 %end
 %end
 
-// Fake premium - @bhackel
-%group gFakePremium
-// YouTube Premium Logo - @arichornlover & bhackel
+%group gMisc3
+
+// YouTube Premium logo - @bhackel & @Tonwalter888
 %hook YTHeaderLogoController
 - (void)setTopbarLogoRenderer:(YTITopbarLogoRenderer *)renderer {
-    // Modify the type of the icon before setting the renderer
-    YTIIcon *iconImage = renderer.iconImage;
-    iconImage.iconType = 537; // magic number for Premium icon, hopefully it doesnt change. 158 is default logo.
-    // Use this modified renderer
-    %orig;
-}
-// For when spoofing before 18.34.5
-- (void)setPremiumLogo:(BOOL)isPremiumLogo {
-    isPremiumLogo = YES;
-    %orig;
-}
-- (BOOL)isPremiumLogo {
-    return YES;
-}
-%end
-%hook YTAppCollectionViewController
-/**
-  * Modify a given renderer data model to fake premium in the You tab
-  * Replaces the "Get YouTube Premium" cell with a "Your Premium benefits" cell
-  * and adds a "Downloads" cell below the "Your videos" cell
-  * @param model The model for the You tab
-  */
-%new
-- (void)uYouEnhancedFakePremiumModel:(YTISectionListRenderer *)model {
-    // Don't do anything if the version is too low
-    Class YTVersionUtilsClass = %c(YTVersionUtils);
-    NSString *appVersion = [YTVersionUtilsClass performSelector:@selector(appVersion)];
-    NSComparisonResult result = [appVersion compare:@"18.35.4" options:NSNumericSearch];
-    if (result == NSOrderedAscending) {
+    if (!IS_ENABLED(kYTPremiumLogo)) {
+        %orig;
         return;
     }
-    NSUInteger yourVideosCellIndex = -1;
-    NSMutableArray <YTISectionListSupportedRenderers *> *overallContentsArray = model.contentsArray;
-    // Check each item in the overall array - this represents the whole You page
-    YTISectionListSupportedRenderers *supportedRenderers;
-    for (supportedRenderers in overallContentsArray) {
-        YTIItemSectionRenderer *itemSectionRenderer = supportedRenderers.itemSectionRenderer;
-        // Check each subobject - this would be visible as a cell in the You page
-        NSMutableArray <YTIItemSectionSupportedRenderers *> *subContentsArray = itemSectionRenderer.contentsArray;
-        YTIItemSectionSupportedRenderers *itemSectionSupportedRenderers;
-        for (itemSectionSupportedRenderers in subContentsArray) {
-            // Check for Get Youtube Premium cell, which is of type CompactLinkRenderer
-            if ([itemSectionSupportedRenderers hasCompactLinkRenderer]) {
-                YTICompactLinkRenderer *compactLinkRenderer = [itemSectionSupportedRenderers compactLinkRenderer];
-                // Check for an icon in this cell
-                if ([compactLinkRenderer hasIcon]) {
-                    YTIIcon *icon = [compactLinkRenderer icon];
-                    // Check if the icon is for the premium advertisement - 117 is magic number for the icon
-                    if ([icon hasIconType] && icon.iconType == 117) {
-                        // Modify the icon type to be Premium
-                        icon.iconType = 741; // Magic number for premium icon
-                        // Modify the text
-                        ((YTIStringRun *)(compactLinkRenderer.title.runsArray.firstObject)).text = LOC(@"FAKE_YOUR_PREMIUM_BENEFITS");
-                    }
-                }
-            }
-            // Check for Your Videos cell using similar logic explained above
-            if ([itemSectionSupportedRenderers hasCompactListItemRenderer]) {
-                YTICompactListItemRenderer *compactListItemRenderer = itemSectionSupportedRenderers.compactListItemRenderer;
-                if ([compactListItemRenderer hasThumbnail]) {
-                    YTICompactListItemThumbnailSupportedRenderers *thumbnail = compactListItemRenderer.thumbnail;
-                    if ([thumbnail hasIconThumbnailRenderer]) {
-                        YTIIconThumbnailRenderer *iconThumbnailRenderer = thumbnail.iconThumbnailRenderer;
-                        if ([iconThumbnailRenderer hasIcon]) {
-                            YTIIcon *icon = iconThumbnailRenderer.icon;
-                            if ([icon hasIconType] && icon.iconType == 658) {
-                                // Store the index of this cell
-                                yourVideosCellIndex = [subContentsArray indexOfObject:itemSectionSupportedRenderers];
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if (yourVideosCellIndex != -1 && subContentsArray[yourVideosCellIndex].accessibilityLabel == nil) {
-            // Create the fake Downloads page by copying the Your Videos page and modifying it
-            // Note that this must be done outside the loop to avoid a runtime exception
-            // TODO Link this to the uYou downloads page
-            YTIItemSectionSupportedRenderers *newItemSectionSupportedRenderers = [subContentsArray[yourVideosCellIndex] copy];
-            ((YTIStringRun *)(newItemSectionSupportedRenderers.compactListItemRenderer.title.runsArray.firstObject)).text = LOC(@"FAKE_DOWNLOADS");
-            newItemSectionSupportedRenderers.compactListItemRenderer.thumbnail.iconThumbnailRenderer.icon.iconType = 147;
-            // Insert this cell after the Your Videos cell
-            [subContentsArray insertObject:newItemSectionSupportedRenderers atIndex:yourVideosCellIndex + 1];
-            // Inject a note to not modify this again
-            subContentsArray[yourVideosCellIndex].accessibilityLabel = @"uYouEnhanced Modified";
-            yourVideosCellIndex = -1;
-        }
+    // Modify the type of the icon before setting the renderer
+    YTIIcon *icon = renderer.iconImage;
+    if (icon) {
+        icon.iconType = YT_PREMIUM_LOGO;
+    }
+    %orig(renderer);
+}
+// For when spoofing before 18.34.5
+- (void)setPremiumLogo:(BOOL)arg {
+    if (IS_ENABLED(kYTPremiumLogo)) {
+        %orig(YES);
+    } else {
+        %orig;
     }
 }
-- (void)loadWithModel:(YTISectionListRenderer *)model {
-    // This method is called on first load of the You page
-    [self uYouEnhancedFakePremiumModel:model];
-    %orig;
-}
-- (void)setupSectionListWithModel:(YTISectionListRenderer *)model isLoadingMore:(BOOL)isLoadingMore isRefreshingFromContinuation:(BOOL)isRefreshingFromContinuation {
-    // This method is called on refresh of the You page
-    [self uYouEnhancedFakePremiumModel:model];
-    %orig;
-}
-%end
-%end
-
-
-// YTShortsProgress - https://github.com/PoomSmart/YTShortsProgress/
-%hook YTShortsPlayerViewController
-- (BOOL)shouldAlwaysEnablePlayerBar { return YES; }
-- (BOOL)shouldEnablePlayerBarOnlyOnPause { return NO; }
-%end
-
-%hook YTReelPlayerViewController
-- (BOOL)shouldAlwaysEnablePlayerBar { return YES; }
-- (BOOL)shouldEnablePlayerBarOnlyOnPause { return NO; }
-%end
-
-%hook YTReelPlayerViewControllerSub
-- (BOOL)shouldAlwaysEnablePlayerBar { return YES; }
-- (BOOL)shouldEnablePlayerBarOnlyOnPause { return NO; }
-%end
-
-%hook YTColdConfig
-- (BOOL)iosEnableVideoPlayerScrubber { return YES; }
-- (BOOL)mobileShortsTablnlinedExpandWatchOnDismiss { return YES; }
-%end
-
-%hook YTHotConfig
-- (BOOL)enablePlayerBarForVerticalVideoWhenControlsHiddenInFullscreen { return YES; }
-%end
-
-// YTNoTracking - @arichornlover - https://github.com/arichornlover/YTNoTracking/ - OUTDATED
-%hook UIApplication
-- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey, id> *)options {
-    NSString *originalURLString = [url absoluteString];
-    NSString *modifiedURLString = originalURLString;
-    if ([modifiedURLString isEqualToString:originalURLString]) {
-        modifiedURLString = [modifiedURLString stringByReplacingOccurrencesOfString:@"&si=[a-zA-Z0-9_-]+" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, modifiedURLString.length)];
+- (BOOL)isPremiumLogo {
+    if (IS_ENABLED(kYTPremiumLogo)) {
+        return YES;
     }
-    NSURL *modifiedURL = [NSURL URLWithString:modifiedURLString];
-    BOOL result = %orig(application, modifiedURL, options);
-    return result;
+    return %orig;
 }
 %end
 
-%hook YTICompactLinkRenderer
-+ (BOOL)hasTrackingParams {
-    return NO;
+%hook YTHeaderLogoControllerImpl
+- (void)setTopbarLogoRenderer:(YTITopbarLogoRenderer *)renderer {
+    if (!IS_ENABLED(kYTPremiumLogo)) {
+        %orig;
+        return;
+    }
+    // Modify the type of the icon before setting the renderer
+    YTIIcon *icon = renderer.iconImage;
+    if (icon) {
+        icon.iconType = YT_PREMIUM_LOGO;
+    }
+    %orig(renderer);
+}
+// For when spoofing before 18.34.5
+- (void)setPremiumLogo:(BOOL)arg {
+    if (IS_ENABLED(kYTPremiumLogo)) {
+        %orig(YES);
+    } else {
+        %orig;
+    }
+}
+- (BOOL)isPremiumLogo {
+    if (IS_ENABLED(kYTPremiumLogo)) {
+        return YES;
+    }
+    return %orig;
 }
 %end
 
-%hook YTIReelPlayerOverlayRenderer
-+ (BOOL)hasTrackingParams {
-    return NO;
-}
-%end
-
-%hook YTIShareTargetServiceUpdateRenderer
-+ (BOOL)hasTrackingParams {
-    return NO;
+// Disable animated YouTube Logo - @bhackel
+%hook YTHeaderLogoControllerImpl // originally was "YTHeaderLogoController"
+- (void)configureYoodleNitrateController {
+    if (IS_ENABLED(kDisableAnimatedYouTubeLogo)) {
+        return;
+    }
+    %orig;
 }
 %end
 
 // YTNoPaidPromo: https://github.com/PoomSmart/YTNoPaidPromo
 %hook YTMainAppVideoPlayerOverlayViewController
 - (void)setPaidContentWithPlayerData:(id)data {
-    if (IS_ENABLED(@"hidePaidPromotionCard_enabled")) {}
-    else { return %orig; }
+    if (!IS_ENABLED(kHidePaidPromotionCard)) {
+        %orig;
+    }
 }
 - (void)playerOverlayProvider:(YTPlayerOverlayProvider *)provider didInsertPlayerOverlay:(YTPlayerOverlay *)overlay {
-    if ([[overlay overlayIdentifier] isEqualToString:@"player_overlay_paid_content"] && IS_ENABLED(@"hidePaidPromotionCard_enabled")) return;
+    if ([[overlay overlayIdentifier] isEqualToString:@"player_overlay_paid_content"] && IS_ENABLED(kHidePaidPromotionCard)) return;
     %orig;
 }
 %end
 
 %hook YTInlineMutedPlaybackPlayerOverlayViewController
 - (void)setPaidContentWithPlayerData:(id)data {
-    if (IS_ENABLED(@"hidePaidPromotionCard_enabled")) {}
-    else { return %orig; }
-}
-%end
-
-// Fix LowContrastMode - @arichornlover
-%group gFixLowContrastMode
-%hook NSUserDefaults
-- (NSInteger)integerForKey:(NSString *)defaultName {
-    if ([defaultName isEqualToString:@"lcm"]) {
-        return contrastMode();
+    if (!IS_ENABLED(kHidePaidPromotionCard)) {
+        %orig;
     }
-    return %orig;
 }
 %end
 
-%hook NSBundle
-- (id)objectForInfoDictionaryKey:(NSString *)key {
-    if ([key isEqualToString:@"CFBundleShortVersionString"]) {
-        return @"17.38.10";
-    }
-    return %orig;
-}
-%end
+%end // gMisc3
 
-%hook YTVersionUtils
-+ (NSString *)appVersion { 
-    return @"17.38.10";
-}
-%end
-
-/*
-%hook YTSettingsCell // Remove v17.38.10 Version Number - @Dayanch96
-- (void)setDetailText:(id)arg1 {
-    NSDictionary *infoDictionary = [[NSBundle mainBundle] infoDictionary];
-    NSString *appVersion = infoDictionary[@"CFBundleShortVersionString"];
-
-    if ([arg1 isEqualToString:@"17.38.10"]) {
-        arg1 = appVersion;
-    } %orig(arg1);
-}
-%end
-*/
-%end
-
-// Disable Modern/Rounded Buttons (_ASDisplayView Version's not included) - @arichornlover
-%group gDisableModernButtons 
-%hook YTQTMButton // Disable Modern/Rounded Buttons
-+ (BOOL)buttonModernizationEnabled { return NO; }
-%end
-%end
-
-// Disable Rounded Hints with no Rounded Corners - @arichornlover
-%group gDisableRoundedHints
-%hook YTBubbleHintView // Disable Modern/Rounded Hints
-+ (BOOL)modernRoundedCornersEnabled { return NO; }
-%end
-%end
-
-// Disable Modern Flags - @arichornlover
-%group gDisableModernFlags
+// Classic Video Player (Restores the v16.xx.x Video Player Functionality) - @arichornlover
+// To-do: disabling "Precise Video Scrubbing" https://9to5google.com/2022/06/29/youtube-precise-video-scrubbing/
+%group gClassicVideoPlayer
 %hook YTColdConfig
-// Disable Modern Content
-- (BOOL)creatorClientConfigEnableStudioModernizedMdeThumbnailPickerForClient { return NO; }
-- (BOOL)cxClientEnableModernizedActionSheet { return NO; }
-- (BOOL)enableClientShortsSheetsModernization { return NO; }
-- (BOOL)enableTimestampModernizationForNative { return NO; }
-- (BOOL)modernizeElementsTextColor { return NO; }
-- (BOOL)modernizeElementsBgColor { return NO; }
-- (BOOL)modernizeCollectionLockups { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigEnableModernButtonsForNative { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigIosEnableModernTabsForNative { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigIosEnableEpUxUpdates { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigIosEnableSheetsUxUpdates { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigIosEnableSnackbarModernization { return NO; }
-// Disable Rounded Content
-- (BOOL)iosDownloadsPageRoundedThumbs { return NO; }
-- (BOOL)iosRoundedSearchBarSuggestZeroPadding { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigEnableRoundedDialogForNative { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigEnableRoundedThumbnailsForNative { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigEnableRoundedThumbnailsForNativeLongTail { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigEnableRoundedTimestampForNative { return NO; }
-// Disable Optional Content
-- (BOOL)elementsClientIosElementsEnableLayoutUpdateForIob { return NO; }
-- (BOOL)supportElementsInMenuItemSupportedRenderers { return NO; }
-- (BOOL)isNewRadioButtonStyleEnabled { return NO; }
-- (BOOL)uiSystemsClientGlobalConfigEnableButtonSentenceCasingForNative { return NO; }
-- (BOOL)mainAppCoreClientEnableClientYouTab { return NO; }
-- (BOOL)mainAppCoreClientEnableClientYouLatency { return NO; }
-- (BOOL)mainAppCoreClientEnableClientYouTabTablet { return NO; }
+- (BOOL)isPinchToEnterFullscreenEnabled { return YES; } // Restore Pinch-to-fullscreen
+- (BOOL)deprecateTabletPinchFullscreenGestures { return NO; } // Restore Pinch-to-fullscreen
 %end
-
 %hook YTHotConfig
-- (BOOL)liveChatIosUseModernRotationDetection { return NO; } // Disable Modern Content (YTHotConfig)
-- (BOOL)liveChatModernizeClassicElementizeTextMessage { return NO; }
-- (BOOL)iosShouldRepositionChannelBar { return NO; }
-- (BOOL)enableElementRendererOnChannelCreation { return NO; }
+- (BOOL)isTabletFullscreenSwipeGesturesEnabled { return NO; } // Disable Swipe-to-fullscreen (iPad)
 %end
 %end
 
-// Disable Ambient Mode in Fullscreen - @arichornlover
+// Disable Ambient Mode in Fullscreen - v21.10.2+ - @arichornlover
 %group gDisableAmbientMode
 %hook YTCinematicContainerView
 - (BOOL)watchFullScreenCinematicSupported {
@@ -646,24 +446,26 @@ NSData *cellDividerData;
 - (BOOL)enableCinematicContainer { return NO; }
 - (BOOL)enableCinematicContainerOnClient { return NO; }
 - (BOOL)enableCinematicContainerOnTablet { return NO; }
-- (BOOL)enableTurnOffCinematicForFrameWithBlackBars { return YES; }
-- (BOOL)enableTurnOffCinematicForVideoWithBlackBars { return YES; }
 - (BOOL)iosCinematicContainerClientImprovement { return NO; }
-- (BOOL)iosEnableGhostCardInlineTitleCinematicContainerFix { return NO; }
-- (BOOL)iosUseFineScrubberMosaicStoreForCinematic { return NO; }
 - (BOOL)mainAppCoreClientEnableClientCinematicPlaylists { return NO; }
 - (BOOL)mainAppCoreClientEnableClientCinematicPlaylistsPostMvp { return NO; }
 - (BOOL)mainAppCoreClientEnableClientCinematicTablets { return NO; }
-- (BOOL)iosEnableFullScreenAmbientMode { return NO; }
 %end
 %end
 
-// Hide YouTube Heatwaves in Video Player (YouTube v17.19.2-latest) - @level3tjg - https://www.reddit.com/r/jailbreak/comments/v29yvk/
+// Hide YouTube Heatwaves in Video Player - v20.02.3+ - @arichornlover
 %group gHideHeatwaves
 %hook YTInlinePlayerBarContainerView
 - (BOOL)canShowHeatwave { return NO; }
 %end
+%hook YTPlayerBarController
+- (void)setHeatmap:(id)arg1 {
+    %orig(NULL);
+}
 %end
+%end
+
+%group gSection5
 
 // YTNoSuggestedVideo - https://github.com/bhackel/YTNoSuggestedVideo
 %hook YTMainAppVideoPlayerOverlayViewController
@@ -675,8 +477,10 @@ NSData *cellDividerData;
 }
 %end
 
+%end // gSection5
+
 // YTTapToSeek - https://github.com/bhackel/YTTapToSeek
-%group YTTTS_Tweak
+%group gYTTapToSeek
     %hook YTInlinePlayerBarContainerView
     - (void)didPressScrubber:(id)arg1 {
         %orig;
@@ -715,10 +519,11 @@ NSData *cellDividerData;
     if (IS_ENABLED(@"hideNotificationButton_enabled")) {
         self.notificationButton.hidden = YES;
     }
-    if (IS_ENABLED(@"hideSponsorBlockButton_enabled")) { 
-        self.sponsorBlockButton.hidden = YES;
-        self.sponsorBlockButton.frame = CGRectZero;
-    }
+    // iSponsorBlock integration temporarily disabled for stability.
+    // if (IS_ENABLED(kHideiSponsorBlockButton) && [self respondsToSelector:@selector(sponsorBlockButton)]) {
+    //     self.sponsorBlockButton.hidden = YES;
+    //     self.sponsorBlockButton.frame = CGRectZero;
+    // }
 }
 %end
 
@@ -746,11 +551,16 @@ NSData *cellDividerData;
 %end
 
 # pragma mark - uYouPlus
+
+%group gSection6
+
 // Video Player Options
 // Skips content warning before playing *some videos - @PoomSmart
 %hook YTPlayabilityResolutionUserActionUIController
 - (void)showConfirmAlert { [self confirmAlertDidPressConfirm]; }
 %end
+
+%end // gSection6
 
 // Portrait Fullscreen - @Dayanch96
 %group gPortraitFullscreen
@@ -761,41 +571,56 @@ NSData *cellDividerData;
 %end
 %end
 
+// Fullscreen to the Right (iPhone-exclusive) - @arichornlover & @bhackel
+// WARNING: Please turn off the “Portrait Fullscreen” and "iPad Layout" Options while the option "Fullscreen to the Right" is enabled below.
+%group gFullscreenToTheRight
+%hook YTWatchViewController
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return UIInterfaceOrientationMaskLandscapeRight;
+}
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
+    return UIInterfaceOrientationLandscapeRight;
+}
+%end
+%end
+
+%group gSection7
+
 // Disable Double tap to skip chapter - @bhackel
 %hook YTDoubleTapToSeekController
 - (void)didTwoFingerDoubleTap:(id)arg1 {
-    if (IS_ENABLED(@"disableChapterSkip_enabled")) {
+    if (IS_ENABLED(kDisableChapterSkip)) {
         return;
     }
     %orig;
 }
 %end
 
-
 // Disable snap to chapter
 %hook YTSegmentableInlinePlayerBarView
 - (void)didMoveToWindow {
     %orig;
-    if (IS_ENABLED(@"snapToChapter_enabled")) {
+    if (IS_ENABLED(kSnapToChapter)) {
         self.enableSnapToChapter = NO;
     }
 }
 %end
 
-
 // Disable Pinch to zoom
 %hook YTColdConfig
 - (BOOL)videoZoomFreeZoomEnabledGlobalConfig {
-    return IS_ENABLED(@"pinchToZoom_enabled") ? NO : %orig;
+    return IS_ENABLED(kPinchToZoom) ? NO : %orig;
 }
 %end
+
+%end // gSection7
 
 // Use stock iOS volume HUD
 // Use YTColdConfig's method, see https://x.com/PoomSmart/status/1756904290445332653
 %group gStockVolumeHUD
 %hook YTColdConfig
 - (BOOL)iosUseSystemVolumeControlInFullscreen {
-    return IS_ENABLED(@"stockVolumeHUD_enabled") ? YES : %orig;
+    return IS_ENABLED(kStockVolumeHUD) ? YES : NO;
 }
 %end
 %hook UIApplication 
@@ -805,73 +630,26 @@ NSData *cellDividerData;
 %end
 %end
 
+%group gSection8
+
 %hook YTColdConfig
 - (BOOL)speedMasterArm2FastForwardWithoutSeekBySliding {
-    return IS_ENABLED(@"slideToSeek_enabled") ? NO : %orig;
+    return IS_ENABLED(kSlideToSeek) ? NO : %orig;
 }
 %end
 
 // Disable double tap to seek
 %hook YTDoubleTapToSeekController
 - (void)enableDoubleTapToSeek:(BOOL)arg1 {
-    return IS_ENABLED(@"doubleTapToSeek_disabled") ? %orig(NO) : %orig;
+    if (IS_ENABLED(kDoubleTapToSeek)) {
+        %orig(NO);
+    } else {
+        %orig;
+    }
 }
 %end
 
-// Hide double tap to seek overlay - @arichornlover & @bhackel
-%group gHideDoubleTapToSeekOverlay
-%hook YTInlinePlayerDoubleTapIndicatorView
-%property(nonatomic, strong) CABasicAnimation *uYouEnhancedBlankAlphaAnimation;
-%property(nonatomic, strong) CABasicAnimation *uYouEnhancedBlankColorAnimation;
-/**
- * @return A clear color animation
- */
-%new
-- (CABasicAnimation *)uYouEnhancedGetBlankColorAnimation {
-    if (!self.uYouEnhancedBlankColorAnimation) {
-        // Create a new basic animation for the color property
-        self.uYouEnhancedBlankColorAnimation = [CABasicAnimation animationWithKeyPath:@"backgroundColor"];
-        // Set values to 0 to prevent visibility
-        self.uYouEnhancedBlankColorAnimation.fromValue = (id)[UIColor clearColor].CGColor;
-        self.uYouEnhancedBlankColorAnimation.toValue = (id)[UIColor clearColor].CGColor;
-        self.uYouEnhancedBlankColorAnimation.duration = 0.0;
-        self.uYouEnhancedBlankColorAnimation.fillMode = kCAFillModeForwards;
-        self.uYouEnhancedBlankColorAnimation.removedOnCompletion = NO;
-    }
-    return self.uYouEnhancedBlankColorAnimation;
-}
-// Replace all color animations with a clear one
-- (CABasicAnimation *)fillColorAnimation {
-    return [self uYouEnhancedGetBlankColorAnimation];
-}
-- (CABasicAnimation *)earlyBackgroundColorAnimation {
-    return [self uYouEnhancedGetBlankColorAnimation];
-}
-- (CABasicAnimation *)laterBackgroundcolorAnimation {
-    return [self uYouEnhancedGetBlankColorAnimation];
-}
-// Replace the opacity animation with a clear one
-- (CABasicAnimation *)alphaAnimation {
-    if (!self.uYouEnhancedBlankAlphaAnimation) {
-        // Create a new basic animation for the opacity property
-        self.uYouEnhancedBlankAlphaAnimation = [CABasicAnimation animationWithKeyPath:@"opacity"];
-        // Set values to 0 to prevent visibility
-        self.uYouEnhancedBlankAlphaAnimation.fromValue = @0.0;
-        self.uYouEnhancedBlankAlphaAnimation.toValue = @0.0;
-        self.uYouEnhancedBlankAlphaAnimation.duration = 0.0;
-        self.uYouEnhancedBlankAlphaAnimation.fillMode = kCAFillModeForwards;
-        self.uYouEnhancedBlankAlphaAnimation.removedOnCompletion = NO; 
-    }
-    return self.uYouEnhancedBlankAlphaAnimation;
-}
-// Remove the screen darkening effect
-- (void)layoutSubviews {
-    %orig;
-    // Set the 0th subview (which darkens the screen) to hidden
-    self.subviews[0].hidden = YES;
-}
-%end
-%end
+%end // gSection8
 
 // Disable pull to enter vertical/portrait fullscreen gesture - @bhackel
 // This was introduced in version 19.XX
@@ -880,7 +658,7 @@ NSData *cellDividerData;
 %hook YTWatchPullToFullController
 - (BOOL)shouldRecognizeOverscrollEventsFromWatchOverscrollController:(id)arg1 {
     // Get the current player orientation
-    YTWatchViewController *watchViewController = self.playerViewSource;
+    YTWatchViewController *watchViewController = (YTWatchViewController *)self.playerViewSource;
     NSUInteger allowedFullScreenOrientations = [watchViewController allowedFullScreenOrientations];
     // Check if the current player orientation is portrait
     if (allowedFullScreenOrientations == UIInterfaceOrientationMaskAllButUpsideDown
@@ -894,31 +672,38 @@ NSData *cellDividerData;
 %end
 %end
 
+%group gSection9
+
 // Video Controls Overlay Options
 // Hide CC / Hide Autoplay switch / Hide YTMusic Button / Enable Share Button / Enable Save to Playlist Button
 %hook YTMainAppControlsOverlayView
 - (void)setClosedCaptionsOrSubtitlesButtonAvailable:(BOOL)arg1 { // hide CC button
-    return IS_ENABLED(@"hideCC_enabled") ? %orig(NO) : %orig;
+    if (IS_ENABLED(kHideCC)) {
+        %orig(NO);
+    } else {
+        %orig;
+    }
 }
 - (void)setAutoplaySwitchButtonRenderer:(id)arg1 { // hide Autoplay
-    if (IS_ENABLED(@"hideAutoplaySwitch_enabled")) {}
-    else { return %orig; }
+    if (!IS_ENABLED(kHideAutoplaySwitch)) {
+        %orig;
+    }
 }
 - (void)setYoutubeMusicButton:(id)arg1 {
-    if (IS_ENABLED(@"hideYTMusicButton_enabled")) {
+    if (IS_ENABLED(kHideYTMusicButton)) {
     } else {
         %orig(arg1);
     }
 }
 - (void)setShareButtonAvailable:(BOOL)arg1 {
-    if (IS_ENABLED(@"enableShareButton_enabled")) {
+    if (IS_ENABLED(kEnableShareButton)) {
         %orig(YES);
     } else {
         %orig(NO);
     }
 }
 - (void)setAddToButtonAvailable:(BOOL)arg1 {
-    if (IS_ENABLED(@"enableSaveToButton_enabled")) {
+    if (IS_ENABLED(kEnableSaveToButton)) {
         %orig(YES);
     } else {
         %orig(NO);
@@ -930,63 +715,56 @@ NSData *cellDividerData;
 %hook YTMainAppControlsOverlayView
 - (void)layoutSubviews {
     %orig; 
-    if (IS_ENABLED(@"disableCollapseButton_enabled")) {  
+    if (IS_ENABLED(kDisableCollapseButton)) {  
         if (self.watchCollapseButton) {
             [self.watchCollapseButton removeFromSuperview];
         }
     }
 }
 - (BOOL)watchCollapseButtonHidden {
-    if (IS_ENABLED(@"disableCollapseButton_enabled")) {
+    if (IS_ENABLED(kDisableCollapseButton)) {
         return YES;
     } else {
         return %orig;
     }
 }
 - (void)setWatchCollapseButtonAvailable:(BOOL)available {
-    if (IS_ENABLED(@"disableCollapseButton_enabled")) {
+    if (IS_ENABLED(kDisableCollapseButton)) {
     } else {
         %orig(available);
     }
 }
 %end
 
-// Hide Fullscreen Button - @arichornlover - PoomSmart's YouQuality tweak breaks when enabling this
+%end // gSection9
+
+// Hide Fullscreen Button - @arichornlover
+%group gHideFullscreenButton
 %hook YTInlinePlayerBarContainerView
+- (BOOL)fullscreenButtonDisabled { return YES; }
+- (BOOL)canShowFullscreenButton { return NO; }
+- (BOOL)canShowFullscreenButtonExperimental { return NO; }
+// - (void)setFullscreenButtonDisabled:(BOOL) // Might implement this if useful - @arichornlover
 - (void)layoutSubviews {
-    %orig; 
-    if (IS_ENABLED(@"disableFullscreenButton_enabled")) {
-        if (self.exitFullscreenButton) {
-            [self.exitFullscreenButton removeFromSuperview];
-            self.exitFullscreenButton.frame = CGRectZero;
-        }
-        if (self.enterFullscreenButton) {
-            [self.enterFullscreenButton removeFromSuperview];
-            self.enterFullscreenButton.frame = CGRectZero;
-        }
-        self.fullscreenButtonDisabled = YES;
+    %orig;
+    if (self.exitFullscreenButton && !self.exitFullscreenButton.hidden) {
+        self.exitFullscreenButton.hidden = YES;
+    }
+    if (self.enterFullscreenButton && !self.enterFullscreenButton.hidden) {
+        self.enterFullscreenButton.hidden = YES;
     }
 }
 %end
-
-// Hide HUD Messages
-%hook YTHUDMessageView
-- (id)initWithMessage:(id)arg1 dismissHandler:(id)arg2 {
-    return IS_ENABLED(@"hideHUD_enabled") ? nil : %orig;
-}
 %end
+
+%group gSection10
 
 // Hide Channel Watermark
+// (YTHUDMessageView / YTAnnotationsViewController removed — classes no longer
+// exist in YouTube 21.x per PoomSmart/YouTubeHeader)
 %hook YTColdConfig
 - (BOOL)iosEnableFeaturedChannelWatermarkOverlayFix {
-    return IS_ENABLED(@"hideChannelWatermark_enabled") ? NO : %orig;
-}
-%end
-// Hide Channel Watermark (for Old YouTube Versions / Backwards Compatibility)
-%hook YTAnnotationsViewController
-- (void)loadFeaturedChannelWatermark {
-    if (IS_ENABLED(@"hideChannelWatermark_enabled")) {}
-    else { return %orig; }
+    return IS_ENABLED(kHideChannelWatermark) ? NO : %orig;
 }
 %end
 
@@ -1022,6 +800,8 @@ NSData *cellDividerData;
 }
 %end
 
+%end // gSection10
+
 // Hide previous and next buttons in all videos - @bhackel
 %group gHidePreviousAndNextButton
 %hook YTColdConfig
@@ -1034,12 +814,16 @@ NSData *cellDividerData;
 %end
 %end
 
-// Hide Video Title (in Fullscreen) - @arichornlover
-%hook YTMainAppVideoPlayerOverlayView
+%group gSection11
+
+// Hide Video Title when in Fullscreen - @arichornlover
+%hook YTMainAppControlsOverlayView
 - (BOOL)titleViewHidden {
     return IS_ENABLED(@"hideVideoTitle_enabled") ? YES : %orig;
 }
 %end
+
+%end // gSection11
 
 // Hide Dark Overlay Background - @Dayanch96
 %group gHideOverlayDarkBackground
@@ -1080,7 +864,7 @@ NSData *cellDividerData;
 }
 %end
 
-%hook YTInlinePlayerBarContainerView // Red Progress Bar - Old (Compatible for v17.33.2-v19.10.7)
+%hook YTInlinePlayerBarContainerView // Red Progress Bar - Old (Compatible for v17.33.2-v19.10.7) - Planned for removal ⚠️
 - (id)quietProgressBarColor {
     return [UIColor redColor];
 }
@@ -1088,7 +872,7 @@ NSData *cellDividerData;
 
 %hook YTPlayerBarRectangleDecorationView // Red Progress Bar - New (Compatible for v19.10.7-latest)
 - (void)drawRectangleDecorationWithSideMasks:(CGRect)rect {
-    if (IS_ENABLED(@"redProgressBar_enabled")) {
+    if (IS_ENABLED(kRedProgressBar)) {
         YTIPlayerBarDecorationModel *model = [self valueForKey:@"_model"];
         int overlayMode = model.playingState.overlayMode;
         model.playingState.overlayMode = 1;
@@ -1100,10 +884,71 @@ NSData *cellDividerData;
 %end
 %end
 
+%group gSection12
+
 // Disable the right panel in fullscreen mode
 %hook YTColdConfig
 - (BOOL)isLandscapeEngagementPanelEnabled {
-    return IS_ENABLED(@"hideRightPanel_enabled") ? NO : %orig;
+    return IS_ENABLED(kHideRightPanel) ? NO : %orig;
+}
+%end
+
+%end // gSection12
+
+// Shorts Quality Picker - @arichornlover
+%group gShortsQualityPicker
+%hook YTHotConfig
+- (BOOL)enableOmitAdvancedMenuInShortsVideoQualityPicker { return YES; }
+- (BOOL)enableShortsVideoQualityPicker { return YES; }
+- (BOOL)iosEnableImmersiveLivePlayerVideoQuality { return YES; }
+- (BOOL)iosEnableShortsPlayerVideoQuality { return YES; }
+- (BOOL)iosEnableShortsPlayerVideoQualityRestartVideo { return YES; }
+- (BOOL)iosEnableSimplerTitleInShortsVideoQualityPicker { return YES; }
+%end
+%end
+
+%group gSection13
+
+// YTShortsProgress - https://github.com/PoomSmart/YTShortsProgress/
+%hook YTShortsPlayerViewController
+- (BOOL)shouldAlwaysEnablePlayerBar { return YES; }
+- (BOOL)shouldEnablePlayerBarOnlyOnPause { return NO; }
+%end
+
+%hook YTReelPlayerViewController
+- (BOOL)shouldAlwaysEnablePlayerBar { return YES; }
+- (BOOL)shouldEnablePlayerBarOnlyOnPause { return NO; }
+%end
+
+%hook YTReelPlayerViewControllerSub
+- (BOOL)shouldAlwaysEnablePlayerBar { return YES; }
+- (BOOL)shouldEnablePlayerBarOnlyOnPause { return NO; }
+%end
+
+%hook YTColdConfig
+- (BOOL)iosEnableVideoPlayerScrubber { return YES; }
+- (BOOL)mobileShortsTablnlinedExpandWatchOnDismiss { return YES; }
+%end
+
+%hook YTHotConfig
+- (BOOL)enablePlayerBarForVerticalVideoWhenControlsHiddenInFullscreen { return YES; }
+%end
+
+// Hide Shorts Cells - LEGACY v1.2.3 - for uYou 3.0.4+ (PoomSmart/YTUnShorts)
+%hook YTIElementRenderer
+- (NSData *)elementData {
+    // Check if hideShortsCells is enabled
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"hideShortsCells"]) {
+        NSString *description = [self description];
+        
+        BOOL hasShorts = ([description containsString:@"shorts_shelf"] || [description containsString:@"shorts_video_cell"] || [description containsString:@"shorts_grid_shelf_footer"] || [description containsString:@"youtube_shorts_24"]);
+        BOOL hasShortsInHistory = [description containsString:@"compact_video.eml"] && [description containsString:@"youtube_shorts_"];
+
+        if (hasShorts || hasShortsInHistory) {
+            return [NSData data];
+        }
+    }
+    return %orig;
 }
 %end
 
@@ -1111,22 +956,47 @@ NSData *cellDividerData;
 %hook _ASDisplayView
 - (void)didMoveToWindow {
     %orig;
-    if ((IS_ENABLED(@"hideBuySuperThanks_enabled")) && ([self.accessibilityIdentifier isEqualToString:@"id.elements.components.suggested_action"])) { 
+    if ((IS_ENABLED(kHideBuySuperThanks)) && ([self.accessibilityIdentifier isEqualToString:@"id.elements.components.suggested_action"])) { 
         self.hidden = YES; 
     }
 
-// Hide Header Links under Channel Profile - @arichornlover - Deprecated ⚠️
-    if ((IS_ENABLED(@"hideChannelHeaderLinks_enabled")) && ([self.accessibilityIdentifier isEqualToString:@"eml.channel_header_links"])) {
+// Hide Shorts Buttons when Paused - Clip, Download, Remix, Stats for Nerds
+    if (IS_ENABLED(kHideShortsClipButton) && ([self.accessibilityIdentifier isEqualToString:@"clip_button.eml"])) {
+        self.hidden = YES;
+    }
+    if (IS_ENABLED(kHideShortsDownloadButton) && ([self.accessibilityIdentifier isEqualToString:@"id.ui.add_to.offline.button"])) {
+        self.hidden = YES;
+    }
+    if (IS_ENABLED(kHideShortsRemixButton) && ([self.accessibilityIdentifier isEqualToString:@"id.video.remix.button"])) {
+        self.hidden = YES;
+    }
+    if (IS_ENABLED(kHideShortsStatsButton) && ([self.accessibilityIdentifier isEqualToString:@"id.video.stats_for_nerds.button"])) {
+        self.hidden = YES;
+    }
+    // Fallback: hide by description for Shorts pause-state buttons
+    if (IS_ENABLED(kHideShortsClipButton) || IS_ENABLED(kHideShortsDownloadButton) || IS_ENABLED(kHideShortsRemixButton) || IS_ENABLED(kHideShortsStatsButton)) {
+        NSString *desc = self.accessibilityLabel;
+        if (desc) {
+            if (IS_ENABLED(kHideShortsClipButton) && [desc isEqualToString:@"Clip"]) self.hidden = YES;
+            if (IS_ENABLED(kHideShortsDownloadButton) && [desc isEqualToString:@"Download"]) self.hidden = YES;
+            if (IS_ENABLED(kHideShortsRemixButton) && [desc isEqualToString:@"Remix"]) self.hidden = YES;
+            if (IS_ENABLED(kHideShortsStatsButton) && [desc isEqualToString:@"Stats for nerds"]) self.hidden = YES;
+        }
+    }
+
+// Hide Header Links under Channel Profile - @arichornlover
+    if ((IS_ENABLED(kHideChannelHeaderLinks)) && ([self.accessibilityIdentifier isEqualToString:@"eml.channel_header_links"])) {
         self.hidden = YES;
         self.opaque = YES;
         self.userInteractionEnabled = NO;
         [self sizeToFit];
+        [self.superview layoutIfNeeded];
         [self setNeedsLayout];
         [self removeFromSuperview];
     }
 
-// Completely Remove the Comment Section under the Video Player - @arichornlover - Deprecated ⚠️
-    if ((IS_ENABLED(@"hideCommentSection_enabled")) && ([self.accessibilityIdentifier isEqualToString:@"id.ui.comments_entry_point_teaser"] 
+// Completely Remove the Comment Section under the Video Player - @arichornlover
+    if ((IS_ENABLED(kHideCommentSection)) && ([self.accessibilityIdentifier isEqualToString:@"id.ui.comments_entry_point_teaser"] 
     || [self.accessibilityIdentifier isEqualToString:@"id.ui.comments_entry_point_simplebox"] 
     || [self.accessibilityIdentifier isEqualToString:@"id.ui.video_metadata_carousel"] 
     || [self.accessibilityIdentifier isEqualToString:@"id.ui.carousel_header"])) {
@@ -1136,18 +1006,20 @@ NSData *cellDividerData;
         CGRect bounds = self.frame;
         bounds.size.height = 0;
         self.frame = bounds;
+        [self.superview layoutIfNeeded];
         [self setNeedsLayout];
         [self removeFromSuperview];
     }
 
-// Hide the Comment Section Previews under the Video Player - @arichornlover - Deprecated ⚠️
-    if ((IS_ENABLED(@"hidePreviewCommentSection_enabled")) && ([self.accessibilityIdentifier isEqualToString:@"id.ui.comments_entry_point_teaser"])) {
+// Hide the Comment Section Previews under the Video Player - @arichornlover
+    if ((IS_ENABLED(kHidePreviewCommentSection)) && ([self.accessibilityIdentifier isEqualToString:@"id.ui.comments_entry_point_teaser"])) {
         self.hidden = YES;
         self.opaque = YES;
         self.userInteractionEnabled = NO;
         CGRect bounds = self.frame;
         bounds.size.height = 0;
         self.frame = bounds;
+        [self.superview layoutIfNeeded];
         [self setNeedsLayout];
         [self removeFromSuperview];
     }
@@ -1156,149 +1028,78 @@ NSData *cellDividerData;
 
 %hook YTReelWatchRootViewController
 - (void)setPausedStateCarouselView {
-    if (IS_ENABLED(@"hideSubscriptions_enabled")) {}
-    else { return %orig; }
+    if (!IS_ENABLED(kHideSubscriptions)) {
+        %orig;
+    }
 }
 %end
 
-
-// Hide Shorts Cells - @PoomSmart & @iCrazeiOS
-%hook YTIElementRenderer
-- (NSData *)elementData {
-        NSString *description = [self description];
-    if ([NSUserDefaults.standardUserDefaults boolForKey:@"removeShortsCell"]) { // uYou (Hide Shorts Cells)
-        if ([description containsString:@"shorts_shelf.eml"] ||
-            [description containsString:@"#shorts"] ||
-            [description containsString:@"shorts_video_cell.eml"] ||
-            [description containsString:@"6Shorts"]) {
-            if (![description containsString:@"history*"]) {
-                return nil;
-            }
-        }
-    }
-// Hide Community Posts - @michael-winay & @arichornlover - Deprecated ⚠️
-    if (IS_ENABLED(@"hideCommunityPosts_enabled")) {
-        if ([description containsString:@"post_base_wrapper.eml"]) {
-            return nil;
-        }
-    }
-    return %orig;
-}
-%end
-
-// Red Subscribe Button - @arichornlover
+// Red Subscribe Button + Hide the Button Containers under the Video Player - @arichornlover
+// Hide the Button Containers under the Video Player - v20.02.3+ - @arichornlover
 %hook ELMContainerNode
-- (void)setBackgroundColor:(id)color {
-    NSString *description = [self description];
-    if (IS_ENABLED(@"redSubscribeButton_enabled")) {
-        if ([description containsString:@"eml.compact_subscribe_button"]) {
-            color = [UIColor redColor];
-        }
-    }
-// Hide the Button Containers under the Video Player - 17.x.x and up - @arichornlover
-    if (IS_ENABLED(@"hideButtonContainers_enabled")) {
-        if ([description containsString:@"id.video.like.button"] ||
-            [description containsString:@"id.video.dislike.button"] ||
-            [description containsString:@"id.video.share.button"] ||
-            [description containsString:@"id.video.remix.button"] ||
-            [description containsString:@"id.ui.add_to.offline.button"]) {
-            color = [UIColor clearColor];
-        }
-    }
-    %orig(color);
-}
-%end
-
-// Hide the (Connect / Thanks / Save / Report) Buttons under the Video Player - 17.x.x and up - @arichornlover (inspired by @PoomSmart's version) DEPRECATED METHOD ⚠️
-%hook _ASDisplayView
 - (void)layoutSubviews {
     %orig;
-    BOOL hideConnectButton = IS_ENABLED(@"hideConnectButton_enabled");
-//  BOOL hideShareButton = IS_ENABLED(@"hideShareButton_enabled"); // OLD
-//  BOOL hideRemixButton = IS_ENABLED(@"hideRemixButton_enabled"); // OLD
-    BOOL hideThanksButton = IS_ENABLED(@"hideThanksButton_enabled");
-//  BOOL hideAddToOfflineButton = IS_ENABLED(@"hideAddToOfflineButton_enabled"); // OLD
-//  BOOL hideClipButton = IS_ENABLED(@"hideClipButton_enabled"); // OLD
-    BOOL hideSaveToPlaylistButton = IS_ENABLED(@"hideSaveToPlaylistButton_enabled");
-    BOOL hideReportButton = IS_ENABLED(@"hideReportButton_enabled");
 
-    for (UIView *subview in self.subviews) {
-        if ([subview.accessibilityLabel isEqualToString:@"connect account"]) {
-            subview.hidden = hideConnectButton;
-        } else if ([subview.accessibilityLabel isEqualToString:@"Thanks"]) {
-            subview.hidden = hideThanksButton;
-        } else if ([subview.accessibilityLabel isEqualToString:@"Save to playlist"]) {
-            subview.hidden = hideSaveToPlaylistButton;
-        } else if ([subview.accessibilityLabel isEqualToString:@"Report"]) {
-            subview.hidden = hideReportButton;
+    NSString *desc = [self description];
+
+// Red Subscribe Button - v20.02.3+ - @arichornlover
+    if ([desc containsString:@"eml.compact_subscribe_button"] && IS_ENABLED(kRedSubscribeButton)) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self applyRedColorToSubscribeButton:self];
+        });
+    }
+// Hide the Button Containers under the Video Player - v20.02.3+ - @arichornlover
+    if (IS_ENABLED(kHideButtonContainers)) {
+        if ([desc containsString:@"id.video.like.button"] ||
+            [desc containsString:@"id.video.dislike.button"] ||
+            [desc containsString:@"id.video.share.button"] ||
+            [desc containsString:@"id.video.remix.button"] ||
+            [desc containsString:@"id.ui.add_to.offline.button"]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self hideMatchingSubviews:self];
+            });
         }
     }
 }
-%end
+- (void)applyRedColorToSubscribeButton:(id)view {
+    if (!view) return;
 
-// Hide the (Connect / Share / Remix / Thanks / Download / Clip / Save / Report) Buttons under the Video Player - 17.x.x and up - @PoomSmart (inspired by @arichornlover) - NEW METHOD
-static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *identifiers) {
-    for (id child in [nodeController children]) {
-        if ([child isKindOfClass:%c(ELMNodeController)]) {
-            NSArray <ELMComponent *> *elmChildren = [(ELMNodeController *)child children];
-            for (ELMComponent *elmChild in elmChildren) {
-                for (NSString *identifier in identifiers) {
-                    if ([[elmChild description] containsString:identifier])
-                        return YES;
+    NSString *desc = [view description];
+    if ([desc containsString:@"eml.compact_subscribe_button"]) {
+        if ([view respondsToSelector:@selector(setBackgroundColor:)]) {
+            [view setBackgroundColor:[UIColor redColor]];
+        }
+    }
+    if ([view respondsToSelector:@selector(subviews)]) {
+        for (id subview in [view subviews]) {
+            [self applyRedColorToSubscribeButton:subview];
+        }
+    }
+}
+- (void)hideMatchingSubviews:(id)view {
+    if (!view) return;
+
+    if ([view respondsToSelector:@selector(subviews)]) {
+        for (id subview in [view subviews]) {
+            NSString *desc = [subview description];
+
+            if ([desc containsString:@"id.video.like.button"] ||
+                [desc containsString:@"id.video.dislike.button"] ||
+                [desc containsString:@"id.video.share.button"] ||
+                [desc containsString:@"id.video.remix.button"] ||
+                [desc containsString:@"id.ui.add_to.offline.button"]) {
+                if ([subview respondsToSelector:@selector(setHidden:)]) {
+                    [subview setHidden:YES];
                 }
+            } else {
+                [self hideMatchingSubviews:subview];
             }
         }
-
-        if ([child isKindOfClass:%c(ASNodeController)]) {
-            ASDisplayNode *childNode = ((ASNodeController *)child).node; // ELMContainerNode
-            NSArray *yogaChildren = childNode.yogaChildren;
-            for (ASDisplayNode *displayNode in yogaChildren) {
-                if ([identifiers containsObject:displayNode.accessibilityIdentifier])
-                    return YES;
-            }
-
-            return findCell(child, identifiers);
-        }
-
-        return NO;
     }
-    return NO;
 }
-
-%hook ASCollectionView
-
-- (CGSize)sizeForElement:(ASCollectionElement *)element {
-    if ([self.accessibilityIdentifier isEqualToString:@"id.video.scrollable_action_bar"]) {
-        ASCellNode *node = [element node];
-        ASNodeController *nodeController = [node controller];
-        if (IS_ENABLED(@"hideShareButton_enabled") && findCell(nodeController, @[@"id.video.share.button"])) {
-            return CGSizeZero;
-        }
-
-        if (IS_ENABLED(@"hideRemixButton_enabled") && findCell(nodeController, @[@"id.video.remix.button"])) {
-            return CGSizeZero;
-        }
-
-        if (IS_ENABLED(@"hideThanksButton_enabled") && findCell(nodeController, @[@"Thanks"])) {
-            return CGSizeZero;
-        }
-
-        if (IS_ENABLED(@"hideClipButton_enabled") && findCell(nodeController, @[@"clip_button.eml"])) {
-            return CGSizeZero;
-        }
-
-        if (IS_ENABLED(@"hideDownloadButton_enabled") && findCell(nodeController, @[@"id.ui.add_to.offline.button"])) {
-            return CGSizeZero;
-        }
-
-        if (IS_ENABLED(@"hideCommentSection_enabled") && findCell(nodeController, @[@"id.ui.carousel_header"])) {
-            return CGSizeZero;
-        }
-    }
-    return %orig;
-}
-
 %end
+
+%end // gSection13
 
 // App Settings Overlay Options
 %group gDisableAccountSection
@@ -1388,27 +1189,27 @@ static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *ide
 %end
 %end
 
+// Auto-Hide Home Bar
+%group gAutoHideHomeBar
+%hook UIViewController
+- (BOOL)prefersHomeIndicatorAutoHidden {
+    return YES;
+}
+%end
+%end
+
+%group gSection14
+
 // YT startup animation
 %hook YTColdConfig
 - (BOOL)mainAppCoreClientIosEnableStartupAnimation {
-    return IS_ENABLED(@"ytStartupAnimation_enabled") ? YES : NO;
+    return IS_ENABLED(kYTStartupAnimation) ? YES : NO;
 }
 %end
 
-// %hook YTSectionListViewController
-// - (void)loadWithModel:(YTISectionListRenderer *)model {
-//     NSMutableArray <YTISectionListSupportedRenderers *> *contentsArray = model.contentsArray;
-//     NSIndexSet *removeIndexes = [contentsArray indexesOfObjectsPassingTest:^BOOL(YTISectionListSupportedRenderers *renderers, NSUInteger idx, BOOL *stop) {
-//         YTIItemSectionRenderer *sectionRenderer = renderers.itemSectionRenderer;
-//         YTIItemSectionSupportedRenderers *firstObject = [sectionRenderer.contentsArray firstObject];
-//         return firstObject.hasPromotedVideoRenderer || firstObject.hasCompactPromotedVideoRenderer || firstObject.hasPromotedVideoInlineMutedRenderer;
-//     }];
-//     [contentsArray removeObjectsAtIndexes:removeIndexes];
-//     %orig;
-// }
-// %end
+%end // gSection14
 
-// Disable hints - https://github.com/LillieH001/YouTube-Reborn/blob/v4/
+// Disable hints
 %group gDisableHints
 %hook YTSettings
 - (BOOL)areHintsDisabled {
@@ -1446,11 +1247,13 @@ static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *ide
 %end
 
 %hook YTHeaderContentComboView
-- (void)setFeedHeaderScrollMode:(int)arg1 { %orig(0); }
+- (void)setFeedHeaderScrollMode:(int)arg1 {
+    %orig(0);
+}
 %end
 
 // Hide the chip bar under the video player?
-// %hook YTChipCloudCell // 
+// %hook YTChipCloudCell
 // - (void)didMoveToWindow {
 //     %orig;
 //     self.hidden = YES;
@@ -1458,24 +1261,45 @@ static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *ide
 // %end
 %end
 
-// Remove “Play next in queue” from the menu (@PoomSmart) - qnblackcat/uYouPlus#1138
+%group gSection15
+
+// Hide "Play next in queue" - qnblackcat/uYouPlus#1138
 %hook YTMenuItemVisibilityHandler
 - (BOOL)shouldShowServiceItemRenderer:(YTIMenuConditionalServiceItemRenderer *)renderer {
-    return IS_ENABLED(@"hidePlayNextInQueue_enabled") && renderer.icon.iconType == 251 ? NO : %orig;
+    if (IS_ENABLED(kHidePlayNextInQueue) && renderer.icon.iconType == YT_QUEUE_PLAY_NEXT) {
+        return NO;
+    }
+    return %orig;
 }
 %end
 
-// Hide the Videos under the Video Player - @Dayanch96
+%hook YTMenuItemVisibilityHandlerImpl
+- (BOOL)shouldShowServiceItemRenderer:(YTIMenuConditionalServiceItemRenderer *)renderer {
+    if (IS_ENABLED(kHidePlayNextInQueue) && renderer.icon.iconType == YT_QUEUE_PLAY_NEXT) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+
+%end // gSection15
+
+// Hide the Videos under the Video Player - @Dayanch96 & @arichornlover
 %group gNoRelatedWatchNexts
 %hook YTWatchNextResultsViewController
 - (void)setVisibleSections:(NSInteger)arg1 {
-    arg1 = 1;
-    %orig(arg1);
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad && UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation)) {
+        // doesn't hide Videos under the Video Player if iPad is in Landscape mode to prevent conflicts
+        return;
+    } else {
+        arg1 = 1;
+        %orig(arg1);
+    }
 }
 %end
 %end
 
-// Hide Videos in Fullscreen - @arichornlover
+// Hide Videos when in Fullscreen - @arichornlover
 %group gNoVideosInFullscreen
 %hook YTFullScreenEngagementOverlayView
 - (void)setRelatedVideosView:(id)view {
@@ -1496,12 +1320,12 @@ static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *ide
 %end
 %end
 
-// iPhone Layout - @LillieH1000 & @arichornlover
+// iPhone Layout - @arichornlover
 %group giPhoneLayout
 %hook UIDevice
-- (long long)userInterfaceIdiom {
-    return NO;
-} 
+- (UIUserInterfaceIdiom)userInterfaceIdiom {
+    return UIUserInterfaceIdiomPhone;
+}
 %end
 %hook UIStatusBarStyleAttributes
 - (long long)idiom {
@@ -1510,12 +1334,20 @@ static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *ide
 %end
 %hook UIKBTree
 - (long long)nativeIdiom {
-    return NO;
+    if ([UIApplication sharedApplication].statusBarOrientation == UIInterfaceOrientationPortrait) {
+        return NO;
+    } else {
+        return YES;
+    }
 } 
 %end
 %hook UIKBRenderer
 - (long long)assetIdiom {
-    return NO;
+    if ([UIApplication sharedApplication].statusBarOrientation == UIInterfaceOrientationPortrait) {
+        return NO;
+    } else {
+        return YES;
+    }
 } 
 %end
 %end
@@ -1548,147 +1380,143 @@ static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *ide
     // dlopen([[NSString stringWithFormat:@"%@/Frameworks/uYou.dylib", [[NSBundle mainBundle] bundlePath]] UTF8String], RTLD_LAZY);
 
     %init;
-    if (IS_ENABLED(@"hideYouTubeLogo_enabled")) {
+    %init(gAlwaysOn);
+    %init(gMisc1);
+    %init(gMisc2);
+    %init(gMisc3);
+    %init(gSection5);
+    %init(gSection6);
+    %init(gSection7);
+    %init(gSection8);
+    %init(gSection9);
+    %init(gSection10);
+    %init(gSection11);
+    %init(gSection12);
+    %init(gSection13);
+    %init(gSection14);
+    %init(gSection15);
+//  if (IS_ENABLED(kSettingsStyle_enabled)) {
+//      %init(gSettingsStyle);
+//  }
+
+    if (IS_ENABLED(kHideYouTubeLogo)) {
         %init(gHideYouTubeLogo);
     }
-    if (IS_ENABLED(@"centerYouTubeLogo_enabled")) {
+    if (IS_ENABLED(kCenterYouTubeLogo)) {
         %init(gCenterYouTubeLogo);
     }
-    if (IS_ENABLED(@"hideSubscriptionsNotificationBadge_enabled")) {
+    if (IS_ENABLED(kHideSubscriptionsNotificationBadge)) {
         %init(gHideSubscriptionsNotificationBadge);
     }
-    if (IS_ENABLED(@"hidePreviousAndNextButton_enabled")) {
+    if (IS_ENABLED(kHidePreviousAndNextButton)) {
         %init(gHidePreviousAndNextButton);
     }
-    if (IS_ENABLED(@"hideOverlayDarkBackground_enabled")) {
+    if (IS_ENABLED(kHideOverlayDarkBackground)) {
         %init(gHideOverlayDarkBackground);
     }
-    if (IS_ENABLED(@"hideVideoPlayerShadowOverlayButtons_enabled")) {
+    if (IS_ENABLED(kHideVideoPlayerShadowOverlayButtons)) {
         %init(gHideVideoPlayerShadowOverlayButtons);
     }
-    if (IS_ENABLED(@"disableHints_enabled")) {
+    if (IS_ENABLED(kDisableHints)) {
         %init(gDisableHints);
     }
-    if (IS_ENABLED(@"redProgressBar_enabled")) {
+    if (IS_ENABLED(kRedProgressBar)) {
         %init(gRedProgressBar);
     }
-    if (IS_ENABLED(@"stickNavigationBar_enabled")) {
+    if (IS_ENABLED(kStickNavigationBar)) {
         %init(gStickNavigationBar);
     }
-    if (IS_ENABLED(@"hideChipBar_enabled")) {
+    if (IS_ENABLED(kHideChipBar)) {
         %init(gHideChipBar);
     }
-    if (IS_ENABLED(@"portraitFullscreen_enabled")) {
+    // gShowNotificationsTab - initialized in Sources/NotificationsTab.xm
+    if (IS_ENABLED(kPortraitFullscreen)) {
         %init(gPortraitFullscreen);
     }
-    if (IS_ENABLED(@"hideFullscreenActions_enabled")) {
+    if (IS_ENABLED(kFullscreenToTheRight)) {
+        %init(gFullscreenToTheRight);
+    }
+    if (IS_ENABLED(kDisableFullscreenButton)) {
+        %init(gHideFullscreenButton);
+    }
+    if (IS_ENABLED(kHideFullscreenActions)) {
         %init(hideFullscreenActions);
     }
-    if (IS_ENABLED(@"iPhoneLayout_enabled") && (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad)) {
+    if (IS_ENABLED(kiPhoneLayout) && (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad)) {
         %init(giPhoneLayout);
     }
-    if (IS_ENABLED(@"stockVolumeHUD_enabled")) {
+    if (IS_ENABLED(kStockVolumeHUD)) {
         %init(gStockVolumeHUD);
     }
-    if (IS_ENABLED(@"hideHeatwaves_enabled")) {
+    if (IS_ENABLED(kHideHeatwaves)) {
         %init(gHideHeatwaves);
     }
-    if (IS_ENABLED(@"noRelatedWatchNexts_enabled")) {
+    if (IS_ENABLED(kHideRelatedWatchNexts)) {
         %init(gNoRelatedWatchNexts);
     }
-    if (IS_ENABLED(@"noVideosInFullscreen_enabled")) {
+    if (IS_ENABLED(kHideVideosInFullscreen)) {
         %init(gNoVideosInFullscreen);
     }
-    if (IS_ENABLED(@"fixLowContrastMode_enabled")) {
-        %init(gFixLowContrastMode);
+    if (IS_ENABLED(kClassicVideoPlayer)) {
+        %init(gClassicVideoPlayer);
     }
-    if (IS_ENABLED(@"disableModernButtons_enabled")) {
-        %init(gDisableModernButtons);
-    }
-    if (IS_ENABLED(@"disableRoundedHints_enabled")) {
-        %init(gDisableRoundedHints);
-    }
-    if (IS_ENABLED(@"disableModernFlags_enabled")) {
-        %init(gDisableModernFlags);
-    }
-    if (IS_ENABLED(@"disableAmbientMode_enabled")) {
+    if (IS_ENABLED(kDisableAmbientMode)) {
         %init(gDisableAmbientMode);
     }
-    if (IS_ENABLED(@"disableAccountSection_enabled")) {
+    if (IS_ENABLED(kDisableAccountSection)) {
         %init(gDisableAccountSection);
     }
-    if (IS_ENABLED(@"disableAutoplaySection_enabled")) {
+    if (IS_ENABLED(kDisableAutoplaySection)) {
         %init(gDisableAutoplaySection);
     }
-    if (IS_ENABLED(@"disableTryNewFeaturesSection_enabled")) {
+    if (IS_ENABLED(kDisableTryNewFeaturesSection)) {
         %init(gDisableTryNewFeaturesSection);
     }
-    if (IS_ENABLED(@"disableVideoQualityPreferencesSection_enabled")) {
+    if (IS_ENABLED(kDisableVideoQualityPreferencesSection)) {
         %init(gDisableVideoQualityPreferencesSection);
     }
-    if (IS_ENABLED(@"disableNotificationsSection_enabled")) {
+    if (IS_ENABLED(kDisableNotificationsSection)) {
         %init(gDisableNotificationsSection);
     }
-    if (IS_ENABLED(@"disableManageAllHistorySection_enabled")) {
+    if (IS_ENABLED(kDisableManageAllHistorySection)) {
         %init(gDisableManageAllHistorySection);
     }
-    if (IS_ENABLED(@"disableYourDataInYouTubeSection_enabled")) {
+    if (IS_ENABLED(kDisableYourDataInYouTubeSection)) {
         %init(gDisableYourDataInYouTubeSection);
     }
-    if (IS_ENABLED(@"disablePrivacySection_enabled")) {
+    if (IS_ENABLED(kDisablePrivacySection)) {
         %init(gDisablePrivacySection);
     }
-    if (IS_ENABLED(@"disableLiveChatSection_enabled")) {
+    if (IS_ENABLED(kDisableLiveChatSection)) {
         %init(gDisableLiveChatSection);
     }
-    if (IS_ENABLED(@"YTTapToSeek_enabled")) {
-        %init(YTTTS_Tweak);
+    if (IS_ENABLED(kYTTapToSeek)) {
+        %init(gYTTapToSeek);
     }
-    if (IS_ENABLED(@"hidePremiumPromos_enabled")) {
+    if (IS_ENABLED(kHidePremiumPromos)) {
         %init(gHidePremiumPromos);
     }
-    if (IS_ENABLED(@"youTabFakePremium_enabled")) {
-        %init(gFakePremium);
-    }
-    if (IS_ENABLED(@"disablePullToFull_enabled")) {
+    if (IS_ENABLED(kDisablePullToFull)) {
         %init(gDisablePullToFull);
     }
-    if (IS_ENABLED(@"uYouAdBlockingWorkaroundLite_enabled")) {
-        %init(uYouAdBlockingWorkaroundLite);
-    }
-    if (IS_ENABLED(@"uYouAdBlockingWorkaround_enabled")) {
-        %init(uYouAdBlockingWorkaround);
-    }
-    if (IS_ENABLED(@"hideHomeTab_enabled")) {
+    // uYouAdBlockingWorkaroundLite + uYouAdBlockingWorkaround - initialized in Sources/AdBlocking.xm
+    if (IS_ENABLED(kHideHomeTab)) {
         %init(gHideHomeTab);
     }
-    if (IS_ENABLED(@"hideDoubleTapToSeekOverlay_enabled")) {
-        %init(gHideDoubleTapToSeekOverlay);
+    if (IS_ENABLED(kAutoHideHomeBar)) {
+        %init(gAutoHideHomeBar);
     }
-
-    // YTNoModernUI - @arichorn
-    BOOL ytNoModernUIEnabled = IS_ENABLED(@"ytNoModernUI_enabled");
-    if (ytNoModernUIEnabled) {
-        NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
-        [userDefaults setBool:NO forKey:@"enableVersionSpoofer_enabled"];
-    } else {
-        BOOL enableVersionSpooferEnabled = IS_ENABLED(@"enableVersionSpoofer_enabled");
-
-        NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
-        [userDefaults setBool:enableVersionSpooferEnabled forKey:@"enableVersionSpoofer_enabled"];
+    if (IS_ENABLED(kShortsQualityPicker)) {
+        %init(gShortsQualityPicker);
     }
-    NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
-    [userDefaults setBool:ytNoModernUIEnabled ? ytNoModernUIEnabled : [userDefaults boolForKey:@"fixLowContrastMode_enabled"] forKey:@"fixLowContrastMode_enabled"];
-    [userDefaults setBool:ytNoModernUIEnabled ? ytNoModernUIEnabled : [userDefaults boolForKey:@"disableModernButtons_enabled"] forKey:@"disableModernButtons_enabled"];
-    [userDefaults setBool:ytNoModernUIEnabled ? ytNoModernUIEnabled : [userDefaults boolForKey:@"disableRoundedHints_enabled"] forKey:@"disableRoundedHints_enabled"];
-    [userDefaults setBool:ytNoModernUIEnabled ? ytNoModernUIEnabled : [userDefaults boolForKey:@"disableModernFlags_enabled"] forKey:@"disableModernFlags_enabled"];
-    [userDefaults setBool:ytNoModernUIEnabled ? ytNoModernUIEnabled : [userDefaults boolForKey:@"disableAmbientMode_enabled"] forKey:@"disableAmbientMode_enabled"];
-    [userDefaults setBool:ytNoModernUIEnabled ? ytNoModernUIEnabled : [userDefaults boolForKey:@"redProgressBar_enabled"] forKey:@"redProgressBar_enabled"];
+    if (IS_ENABLED(kFixCasting)) {
+        %init(gFixCasting);
+    }
 
     // Change the default value of some options
     NSArray *allKeys = [[[NSUserDefaults standardUserDefaults] dictionaryRepresentation] allKeys];
-    if (![allKeys containsObject:@"hidePlayNextInQueue_enabled"]) {
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"hidePlayNextInQueue_enabled"];
+    if (![allKeys containsObject:kHidePlayNextInQueue]) {
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kHidePlayNextInQueue];
     }
     if (![allKeys containsObject:@"relatedVideosAtTheEndOfYTVideos"]) { 
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"relatedVideosAtTheEndOfYTVideos"]; 
@@ -1702,12 +1530,18 @@ static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *ide
     if (![allKeys containsObject:@"YouPiPEnabled"]) { 
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"YouPiPEnabled"]; 
     }
-    if (![allKeys containsObject:@"uYouAdBlockingWorkaroundLite_enabled"]) { 
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"uYouAdBlockingWorkaroundLite_enabled"]; 
-        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"removeYouTubeAds"]; 
+    if (![allKeys containsObject:kReplaceYTDownloadWithuYou]) {
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kReplaceYTDownloadWithuYou];
     }
-    if (![allKeys containsObject:@"uYouAdBlockingWorkaround_enabled"]) { 
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"uYouAdBlockingWorkaround_enabled"]; 
+    if (![allKeys containsObject:kAdBlockWorkaroundLite]) { 
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kAdBlockWorkaroundLite];
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kAdBlockWorkaround];
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"removeYouTubeAds"];
+    }
+    if (![allKeys containsObject:kAdBlockWorkaround]) { 
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kAdBlockWorkaroundLite];
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kAdBlockWorkaround];
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"removeYouTubeAds"];
     }
     // Broken uYou 3.0.3 setting: No Suggested Videos at The Video End
     // Set default to allow autoplay, user can disable later
@@ -1715,8 +1549,20 @@ static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *ide
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"noSuggestedVideoAtEnd"]; 
     }
     // Broken uYou 3.0.2 setting: Playback Speed Controls
-    // Set default to disabled
-    if (![allKeys containsObject:@"showPlaybackRate"]) { 
-        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"showPlaybackRate"]; 
+    // Set default to disabled on iPads
+    if (![allKeys containsObject:@"showPlaybackRate"]) {
+        if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) {
+            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"showPlaybackRate"]; 
+        } else {
+            [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"showPlaybackRate"]; 
+        }
+    }
+    // Set video casting fix default to enabled
+    if (![allKeys containsObject:@"fixCasting_enabled"]) { 
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kFixCasting]; 
+    }
+    // Set new grouped settings UI to default enabled
+    if (![allKeys containsObject:@"newSettingsUI_enabled"]) { 
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kNewSettingsUI]; 
     }
 }
